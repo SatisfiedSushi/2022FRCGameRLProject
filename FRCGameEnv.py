@@ -10,9 +10,14 @@ from gymnasium.spaces import Dict, Box, MultiDiscrete
 import numpy as np
 import pygame
 import pygame._sdl2.controller
+from gymnasium.utils import EzPickle
+from numpy import float32, int64
+from pettingzoo import AECEnv
 # Box2D.b2 maps Box2D.b2Vec2 to vec2 (and so on)
-from Box2D.Box2D import *
-from pettingzoo.utils.env import ParallelEnv
+from Box2D.Box2D import (b2CircleShape, b2ContactListener, b2FrictionJointDef, b2_staticBody, b2_dynamicBody,
+                         b2PolygonShape, b2World, )
+from pettingzoo.utils import agent_selector
+from pettingzoo.utils.env import ParallelEnv, ObsType
 
 from SwerveDrive import SwerveDrive
 
@@ -110,7 +115,8 @@ class MyContactListener(b2ContactListener):
 class env(ParallelEnv):
     metadata = {
         'render.modes': ['human'],
-        'name': 'FRCGameEnv-v0'
+        'name': 'FRCGameEnv-v0',
+        "is_parallelizable": True,
     }
 
     def meters_to_pixels(self, meters):
@@ -160,6 +166,8 @@ class env(ParallelEnv):
     def return_robots_in_sight(self, robot_main):
         LL_FOV = 31.65  # 31.65 degrees off the center of the LL
         found_robots = []
+        angles = []
+        teams = []
         angle_offset = 0
 
         for robot in self.robots:
@@ -172,8 +180,23 @@ class env(ParallelEnv):
                 angle_degrees += 360
             if np.abs((math.degrees(robot_main.angle) % 360) - angle_degrees) < LL_FOV:
                 angle_offset = (math.degrees(robot_main.angle) % 360) - angle_degrees
-                found_robots.append([robot.userData['Team'], angle_offset])
+                team = 0
+                if robot.userData['Team'] == 'Blue':
+                    team = 1
+                else:
+                    team = 2
+                teams.append(team)
+                angles.append(angle_offset)
 
+        found_robots.append(teams)
+        found_robots.append(angles)
+
+        if len(found_robots[0]) != 0 and len(found_robots) != 5:
+            for robot in range(5 - len(found_robots)):
+                found_robots[0].append(0)
+                found_robots[1].append(0)
+        elif len(found_robots[0]) == 0:
+            found_robots = [[0, 0, 0, 0, 0], [0, 0, 0, 0, 0]]
         return found_robots
 
     def create_new_ball(self, position, force_direction, team, force=0.014 - ((random.random() / 100))):
@@ -239,7 +262,8 @@ class env(ParallelEnv):
                     force_direction=(np.pi / 4) + np.pi, team='Red', force=force)
                 return 'Red'
 
-    def __init__(self, render_mode="human"):
+    def __init__(self, render_mode="human", *args, **kwargs):
+        super().__init__()
         # --- pygame setup ---
         self.PPM = 100.0  # pixels per meter
         self.TARGET_FPS = 60
@@ -252,6 +276,18 @@ class env(ParallelEnv):
         # RL variables
         self.render_mode = render_mode
         self.possible_agents = ["red_1", "red_2", "red_3", "blue_1", "blue_2", "blue_3"]
+        self.last_rewards = {agent: None
+                             for agent in self.possible_agents}
+        self.last_truncations = {agent: None
+                             for agent in self.possible_agents}
+        self.last_terminations = {agent: None
+                             for agent in self.possible_agents}
+        self.last_rewards = {agent: None
+                             for agent in self.possible_agents}
+        self.last_infos = {agent: None
+                             for agent in self.possible_agents}
+        self.agents = copy(self.possible_agents)
+        self._agent_selector = agent_selector(self.agents)
 
         self.red_Xs = None
         self.red_Ys = None
@@ -300,38 +336,9 @@ class env(ParallelEnv):
             b2_dynamicBody: (127, 127, 127, 255),
         }
 
-        def my_draw_polygon(polygon, body, fixture):
-            vertices = [(body.transform * v) * self.PPM for v in polygon.vertices]
-            vertices = [(v[0], self.SCREEN_HEIGHT - v[1]) for v in vertices]
-            if body.userData is not None:
-                pygame.draw.polygon(self.screen,
-                                    (0, 0, 255, 255) if body.userData['Team'] == 'Blue' else (255, 0, 0, 255),
-                                    vertices)
-            else:
-                pygame.draw.polygon(self.screen, self.colors[body.type], vertices)
-
-        b2PolygonShape.draw = my_draw_polygon
-
-        def my_draw_circle(circle, body, fixture):
-            position = body.transform * circle.pos * self.PPM
-            position = (position[0], self.SCREEN_HEIGHT - position[1])
-            pygame.draw.circle(self.screen, (0, 0, 255, 255) if body.userData['Team'] == 'Blue' else (255, 0, 0, 255),
-                               [int(
-                                   x) for x in position], int(circle.radius * self.PPM))
-            # Note: Python 3.x will enforce that pygame get the integers it requests,
-            #       and it will not convert from float.
-
-        b2CircleShape.draw = my_draw_circle
-
-    def reset(
-            self,
-            *,
-            seed=None,
-            options=None,
-    ):
-
-        # --- RL variables ---
         self.agents = copy(self.possible_agents)
+        self._agent_selector.reinit(self.agents)
+        self.agent_selection = self._agent_selector.next()
         self.timestep = 0
         self.scoreHolder = ScoreHolder()
         self.current_time = time.time()
@@ -430,14 +437,218 @@ class env(ParallelEnv):
             self.create_new_robot(position=position, angle=0, team=team)
 
         self.swerve_instances = [
-            SwerveDrive(robot, robot.userData['Team'], (1, 1), 1, velocity_factor=self.velocity_factor,
+            SwerveDrive(robot, robot.userData['Team'], 0, (0, 0), 0, velocity_factor=self.velocity_factor,
+                        angular_velocity_factor=self.angular_velocity_factor) for robot in
+            self.robots]
+
+        self.last_observations = {
+            agent: {
+                'velocity': np.asarray(self.swerve_instances[self.agents.index(agent)].get_velocity(), dtype=float32),
+                'angular_velocity': np.array([self.swerve_instances[self.agents.index(agent)].get_angular_velocity()],
+                                             dtype=float32),
+                'angle': np.array([self.swerve_instances[self.agents.index(agent)].get_angle()], dtype=float32),
+                'closest_ball': {
+                    'angle': np.array([
+                        self.return_closest_ball(self.swerve_instances[self.agents.index(agent)].get_box2d_instance())[
+                            1]], dtype=float32)
+                },
+                'robots_in_sight': {
+                    'angles': np.array(self.return_robots_in_sight(
+                        self.swerve_instances[self.agents.index(agent)].get_box2d_instance())[1], dtype=float32),
+                    'teams': np.array(self.return_robots_in_sight(
+                        self.swerve_instances[self.agents.index(agent)].get_box2d_instance())[0], dtype=int64)
+                }
+            }
+            for agent in self.agents
+        }
+
+        def my_draw_polygon(polygon, body, fixture):
+            vertices = [(body.transform * v) * self.PPM for v in polygon.vertices]
+            vertices = [(v[0], self.SCREEN_HEIGHT - v[1]) for v in vertices]
+            if body.userData is not None:
+                pygame.draw.polygon(self.screen,
+                                    (0, 0, 255, 255) if body.userData['Team'] == 'Blue' else (255, 0, 0, 255),
+                                    vertices)
+            else:
+                pygame.draw.polygon(self.screen, self.colors[body.type], vertices)
+
+        b2PolygonShape.draw = my_draw_polygon
+
+        def my_draw_circle(circle, body, fixture):
+            position = body.transform * circle.pos * self.PPM
+            position = (position[0], self.SCREEN_HEIGHT - position[1])
+            pygame.draw.circle(self.screen, (0, 0, 255, 255) if body.userData['Team'] == 'Blue' else (255, 0, 0, 255),
+                               [int(
+                                   x) for x in position], int(circle.radius * self.PPM))
+            # Note: Python 3.x will enforce that pygame get the integers it requests,
+            #       and it will not convert from float.
+
+        b2CircleShape.draw = my_draw_circle
+
+    def last(
+            self, observe: bool = True):
+        """Returns observation, cumulative reward, terminated, truncated, info for the current agent (specified by self.agent_selection)."""
+        agent = self.agent_selection
+        assert agent
+        observation = self.observe(agent) if observe else None
+        return (
+            observation,
+            self._cumulative_rewards[agent],
+            self.terminations[agent],
+            self.truncations[agent],
+            self.infos[agent],
+        )
+
+    def reset(
+            self,
+            *,
+            seed=None,
+            return_info=True,
+            options=None,
+    ):
+        if self.render_mode is not None:
+            self.reset_pygame()
+
+        # --- RL variables ---
+        self.agents = copy(self.possible_agents)
+        self._agent_selector.reinit(self.agents)
+        self.agent_selection = self._agent_selector.next()
+        self.last_rewards = {agent: None
+                             for agent in self.possible_agents}
+        self.last_truncations = {agent: None
+                                 for agent in self.possible_agents}
+        self.last_terminations = {agent: None
+                                  for agent in self.possible_agents}
+        self.last_rewards = {agent: None
+                             for agent in self.possible_agents}
+        self.last_infos = {agent: None
+                           for agent in self.possible_agents}
+        self.timestep = 0
+        self.scoreHolder = ScoreHolder()
+        self.current_time = time.time()
+        self.game_time = self.teleop_time - (time.time() - self.current_time)
+
+        # --- other ---
+        self.balls = []
+        self.robots = []  # TODO: find out how the fuck this works
+        self.red_spawned = False
+        self.blue_spawned = False
+
+        # --- FRC game setup ---
+        self.hub_points = []
+        self.world = b2World(gravity=(0, 0), doSleep=True, contactListener=MyContactListener(self.scoreHolder))
+
+        self.carpet = self.world.CreateStaticBody(
+            position=(-3, -3),
+        )
+
+        self.carpet_fixture = self.carpet.CreatePolygonFixture(box=(1, 1), density=1, friction=0.3)
+
+        self.lower_wall = self.world.CreateStaticBody(
+            position=(0, -1),
+            shapes=b2PolygonShape(box=(16.46, 1)),
+        )
+        self.left_wall = self.world.CreateStaticBody(
+            position=(-1 - 0.02, 0),  # -1 is the actual but it hurts my eyes beacuase i can still see the wall
+            shapes=b2PolygonShape(box=(1, 8.23)),
+        )
+        self.right_wall = self.world.CreateStaticBody(
+            position=(16.47 + 1, 0),  # 16.46 is the actual but it hurts my eyes beacuase i can still see the wall
+            shapes=b2PolygonShape(box=(1, 8.23)),
+        )
+        self.upper_wall = self.world.CreateStaticBody(
+            position=(0, 8.23 + 1),
+            shapes=b2PolygonShape(box=(16.46, 1)),
+        )
+
+        self.terminal_blue = self.world.CreateStaticBody(
+            position=((0.247) / math.sqrt(2), (0.247) / math.sqrt(2)),
+            angle=np.pi / 4,
+            shapes=b2PolygonShape(box=(0.99, 2.47)),
+        )
+
+        self.terminal_red = self.world.CreateStaticBody(
+            position=((16.46 - (0.247 / math.sqrt(2))), (8.23 - (0.247 / math.sqrt(2)))),
+            angle=np.pi / 4,
+            shapes=b2PolygonShape(box=(0.99, 2.47)),
+        )
+
+        self.hub = self.world.CreateStaticBody(
+            position=(16.46 / 2, 8.23 / 2),
+            angle=1.151917,
+            shapes=b2PolygonShape(box=(0.86, 0.86)),
+        )
+
+        for vertex in self.hub.fixtures[0].shape.vertices:
+            new_vertex = self.hub.GetWorldPoint(vertex)
+            offset = 0
+            if new_vertex.x < 0:
+                new_vertex.x -= offset
+            else:
+                new_vertex.x += offset
+
+            if new_vertex.y < 0:
+                new_vertex.y -= offset
+            else:
+                new_vertex.y += offset
+
+            self.hub_points.append(new_vertex)
+
+        ball_circle_diameter = 7.77
+        ball_circle_center = (16.46 / 2, 8.23 / 2)
+
+        ball_x_coords = [0.658, -0.858, -2.243, -3.287, -3.790, -3.174, -0.658, 0.858, 2.243, 3.287, 3.790, 3.174,
+                         -7.165,
+                         7.165]
+        ball_y_coords = [3.830, 3.790, 3.174, 2.074, -0.858, -2.243, -3.830, -3.790, -3.174, -2.074, 0.858, 2.243,
+                         -2.990,
+                         2.990]
+
+        ball_teams = ["Red", "Blue", "Red", "Blue", "Red", "Blue", "Blue", "Red", "Blue", "Red", "Blue", "Red", "Blue",
+                      "Red"]
+
+        for x_coord, y_coord, team in zip(ball_x_coords, ball_y_coords, ball_teams):
+            position = (x_coord + ball_circle_center[0], y_coord + ball_circle_center[1])
+            self.create_new_ball(position=position, force_direction=0, team=team, force=0)
+
+        robot_x_coords = [-1.3815, -0.941, 0, 1.381, 0.941, 0]
+        robot_y_coords = [0.5305, -0.9915, -1.3665, -0.53, 0.9915, 1.3665]
+
+        robot_teams = ["Blue", "Blue", "Blue", "Red", "Red", "Red"]
+
+        for x_coord, y_coord, team in zip(robot_x_coords, robot_y_coords, robot_teams):
+            position = (x_coord + ball_circle_center[0], y_coord + ball_circle_center[1])
+            self.create_new_robot(position=position, angle=0, team=team)
+
+        self.swerve_instances = [
+            SwerveDrive(robot, robot.userData['Team'], 0, (0, 0), 0, velocity_factor=self.velocity_factor,
                         angular_velocity_factor=self.angular_velocity_factor) for robot in
             self.robots]  # TODO: find out how the fuck this works
 
-        observations = {agent: None for agent in self.agents}
+        self.last_observations = {
+            agent: {
+                'velocity': np.asarray(self.swerve_instances[self.agents.index(agent)].get_velocity(), dtype=float32),
+                'angular_velocity': np.array([self.swerve_instances[self.agents.index(agent)].get_angular_velocity()],
+                                             dtype=float32),
+                'angle': np.array([self.swerve_instances[self.agents.index(agent)].get_angle()], dtype=float32),
+                'closest_ball': {
+                    'angle': np.array([
+                        self.return_closest_ball(self.swerve_instances[self.agents.index(agent)].get_box2d_instance())[
+                            1]], dtype=float32)
+                },
+                'robots_in_sight': {
+                    'angles': np.array(self.return_robots_in_sight(
+                        self.swerve_instances[self.agents.index(agent)].get_box2d_instance())[1], dtype=float32),
+                    'teams': np.array(self.return_robots_in_sight(
+                        self.swerve_instances[self.agents.index(agent)].get_box2d_instance())[0], dtype=int64)
+                }
+            }
+            for agent in self.agents
+        }
         infos = {agent: {} for agent in self.agents}
 
-        return observations, infos
+        if return_info:
+            return infos
 
     def reset_pygame(self):
         # --- pygame setup ---
@@ -447,7 +658,8 @@ class env(ParallelEnv):
         self.clock = pygame.time.Clock()
         self.screen = pygame.display.set_mode((self.SCREEN_WIDTH, self.SCREEN_HEIGHT), 0, 32)
 
-    def step(self, actions):  # TODO: change action dictionary
+    def step(self, actions):
+        agent = self.agent_selection
         if not actions:
             self.agents = []
             return {}, {}, {}, {}, {}
@@ -455,17 +667,16 @@ class env(ParallelEnv):
         self.game_time = self.teleop_time - (time.time() - self.current_time)
         self.sweep_dead_bodies()
 
-        for agent in self.agents:
-            swerve = self.swerve_instances[self.agents.index(agent)]
-            swerve.set_velocity(actions[agent]['velocity'])
-            swerve.set_angular_velocity(actions[agent]['angular_velocity'])
-            swerve.update()
+        swerve = self.swerve_instances[self.agents.index(agent)]
+        swerve.set_velocity(actions['velocity'])
+        swerve.set_angular_velocity(actions['angular_velocity'])
+        swerve.update()
 
-            match self.is_close_to_terminal(swerve.get_box2d_instance(), self.red_spawned, self.blue_spawned):
-                case 'Red':
-                    self.red_spawned = True
-                case 'Blue':
-                    self.blue_spawned = True
+        match self.is_close_to_terminal(swerve.get_box2d_instance(), self.red_spawned, self.blue_spawned):
+            case 'Red':
+                self.red_spawned = True
+            case 'Blue':
+                self.blue_spawned = True
 
         self.world.Step(self.TIME_STEP, 10, 10)
         self.clock.tick(self.TARGET_FPS)
@@ -478,48 +689,49 @@ class env(ParallelEnv):
             for agent in self.agents
         }
 
-        terminations = {agent: False for agent in self.agents}
+        terminations = False
         env_truncation = self.game_time > self.teleop_time
-        truncations = {agent: env_truncation for agent in self.agents}
+        truncations = False
 
         observations = {
-            agent: {
-                'observation': {
-                    'velocity': self.swerve_instances[self.agents.index(agent)].get_velocity(),
-                    'angular_velocity': self.swerve_instances[self.agents.index(agent)].get_angular_velocity(),
-                    'angle': self.swerve_instances[self.agents.index(agent)].get_angle(),
-                    'closest_ball':
-                        self.return_closest_ball(self.swerve_instances[self.agents.index(agent)].get_box2d_instance())[
-                            1],
-                    'robots_in_sight': {
-                        'teams': 0 if self.return_robots_in_sight(
-                            self.swerve_instances[self.agents.index(agent)].get_box2d_instance()) == [] else 1 if
-                        self.return_robots_in_sight(
-                            self.swerve_instances[self.agents.index(agent)].get_box2d_instance())[0][
-                            0] == 'Blue' else 2,
-                        'angle': 0 if self.return_robots_in_sight(
-                            self.swerve_instances[self.agents.index(agent)].get_box2d_instance()) == [] else
-                        self.return_robots_in_sight(
-                            self.swerve_instances[self.agents.index(agent)].get_box2d_instance())[0][1],
-                    },
-                }
+            'velocity': np.asarray(self.swerve_instances[self.agents.index(agent)].get_velocity(), dtype=float32),
+            'angular_velocity': np.array([self.swerve_instances[self.agents.index(agent)].get_angular_velocity()],
+                                         dtype=float32),
+            'angle': np.array([self.swerve_instances[self.agents.index(agent)].get_angle()], dtype=float32),
+            'closest_ball': {
+                'angle': np.array([
+                    self.return_closest_ball(self.swerve_instances[self.agents.index(agent)].get_box2d_instance())[
+                        1]], dtype=float32)
+            },
+            'robots_in_sight': {
+                'angles': np.array(self.return_robots_in_sight(
+                    self.swerve_instances[self.agents.index(agent)].get_box2d_instance())[1], dtype=float32),
+                'teams': np.array(self.return_robots_in_sight(
+                    self.swerve_instances[self.agents.index(agent)].get_box2d_instance())[0], dtype=int64)
             }
-
-            for agent in self.agents
         }
+        self.last_observations[f'{agent}'] = observations
+        self.last_rewards[f'{agent}'] = rewards
+        self.last_truncations[f'{agent}'] = truncations
+        self.last_terminations[f'{agent}'] = terminations
 
-        infos = {agent: {} for agent in self.agents}
+        infos = {}
+        self.last_infos[f'{agent}'] = infos
 
         if env_truncation:
             self.agents = []
             pygame.quit()
+
+        self.agent_selection = self._agent_selector.next()
 
         if self.render_mode == 'human':
             self.render()
         return observations, rewards, terminations, truncations, infos
 
     def close(self):
-        pygame.quit()
+        if self.render_mode is not None:
+            pygame.display.quit()
+            pygame.quit()
 
     def render(self):
         if self.render_mode is None:
@@ -560,25 +772,19 @@ class env(ParallelEnv):
 
     @functools.lru_cache(maxsize=None)
     def observation_space(self, agent):
-        observations = Dict(
-            {
-                'velocity': Box(low=np.array([-1, -1]), high=np.array([1, 1]), shape=(2,)),
-                'angular_velocity': Box(low=np.array([-1]), high=np.array([1]), shape=(1,)),
-                'angle': Box(low=np.array([-1]), high=np.array([360]), shape=(1,)),
-                'closest_ball': Dict(
-                    {
-                        'angle': Box(low=np.array([-180]), high=np.array([180]), shape=(1,)),
-                    }
-                ),
-                'robots_in_sight': Dict(
-                    {
-                        'angles': Box(low=np.array([-180, -180, -180, -180, -180]),
-                                      high=np.array([180, 180, 180, 180, 180]), shape=(5,)),
-                        'teams': MultiDiscrete(np.array([3, 3, 3, 3, 3])),
-                    }
-                ),
-            }
-        )
+        observations = Dict({
+            'velocity': Box(low=np.array([-1, -1]), high=np.array([1, 1]), shape=(2,), dtype=float32),
+            'angular_velocity': Box(low=-1, high=1, shape=(1,), dtype=float32),
+            'angle': Box(low=-1, high=360, shape=(1,), dtype=float32),
+            'closest_ball': Dict({
+                'angle': Box(low=-180, high=180, shape=(1,), dtype=float32)
+            }),
+            'robots_in_sight': Dict({
+                'angles': Box(low=np.array([-180, -180, -180, -180, -180]), high=np.array([180, 180, 180, 180, 180]),
+                              shape=(5,), dtype=float32),
+                'teams': MultiDiscrete(np.array([3, 3, 3, 3, 3]), dtype=int64)
+            })
+        })
         return observations
 
     @functools.lru_cache(maxsize=None)
@@ -586,7 +792,10 @@ class env(ParallelEnv):
         actions = Dict(
             {
                 'velocity': Box(low=np.array([-1, -1]), high=np.array([1, 1]), shape=(2,)),
-                'angular_velocity': Box(low=np.array([-1]), high=np.array([1]), shape=(1,)),
+                'angular_velocity': Box(-1, 1, shape=(1,)),
             }
         )
         return actions
+
+    def observe(self, agent):
+        return self.last_observations[f'{agent}']

@@ -5,9 +5,10 @@ from Box2D.Box2D import b2Body
 
 
 class SwerveDrive(object):
-    def __init__(self, Box2d_instance: b2Body, angle: Optional[int or float], velocity: Optional[list or tuple], angular_velocity: Optional[int or float], velocity_factor: Optional[int or float], angular_velocity_factor: Optional[int or float]):
+    def __init__(self, Box2d_instance: b2Body, team: Optional[str], angle: Optional[int or float], velocity: Optional[list or tuple], angular_velocity: Optional[int or float], velocity_factor: Optional[int or float], angular_velocity_factor: Optional[int or float]):
         self.Box2d_instance = Box2d_instance
         self.angle = angle
+        self.team = team
         self.velocity_factor = velocity_factor
         self.angular_velocity_factor = angular_velocity_factor
         self.velocity = velocity
@@ -16,7 +17,8 @@ class SwerveDrive(object):
         self.angular_velocity_with_factor = angular_velocity * angular_velocity_factor
 
 
-
+    def get_team(self) -> str:
+        return self.team
     def get_position(self) -> dict:
         return {"x": self.Box2d_instance.position.x, "y": self.Box2d_instance.position.y}
 
@@ -38,16 +40,19 @@ class SwerveDrive(object):
     def get_angular_velocity_with_factor(self) -> Union[int, float]:
         return self.angular_velocity_with_factor
 
+    def set_team(self, team):
+        self.team = team
+
     def set_angle(self, angle: Union[int, float]) -> None:
         self.angle = angle
 
-    def set_velocity(self, velocity: Union[int, float]) -> None:
+    def set_velocity(self, velocity: Union[tuple]) -> None:
         self.velocity = velocity
-        self.velocity_with_factor = velocity * self.velocity_factor
+        self.velocity_with_factor = (velocity[0] * self.velocity_factor, velocity[1] * self.velocity_factor)
 
     def set_angular_velocity(self, angular_velocity: Union[list]) -> None:
-        self.angular_velocity = angular_velocity[0]
-        self.angular_velocity_with_factor = angular_velocity[0] * self.angular_velocity_factor
+        self.angular_velocity = angular_velocity
+        self.angular_velocity_with_factor = angular_velocity * self.angular_velocity_factor
 
     def update(self):
 
