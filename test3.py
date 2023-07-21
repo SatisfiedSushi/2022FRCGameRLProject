@@ -7,14 +7,15 @@ import pygame, sys
 from pygame.locals import *
 from tensorflow import keras
 from FRCGameEnv2 import env
+import os
+os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
 
 environment = env()
 
 input_shape = 15
 num_actions = 3
 
-
-policy_network_red_vel_x = tf.keras.models.Sequential([
+'''policy_network_red_vel_x = tf.keras.models.Sequential([
     tf.keras.layers.Dense(32, activation='relu', input_shape=(input_shape,)),
     tf.keras.layers.Dense(32, activation='relu'),
     tf.keras.layers.Dense(201, activation='softmax')
@@ -40,21 +41,28 @@ policy_network_blue_vel_y = tf.keras.models.Sequential([
     tf.keras.layers.Dense(32, activation='relu'),
     tf.keras.layers.Dense(201, activation='softmax')
 ])
-policy_network_blue_vel_a= tf.keras.models.Sequential([
+policy_network_blue_vel_a = tf.keras.models.Sequential([
     tf.keras.layers.Dense(32, activation='relu', input_shape=(input_shape,)),
     tf.keras.layers.Dense(32, activation='relu'),
     tf.keras.layers.Dense(201, activation='softmax')
 ])
+'''
+policy_network_blue_vel_x = tf.keras.models.load_model('keras/policy_network_blue_vel_x')
+policy_network_blue_vel_y = tf.keras.models.load_model('keras/policy_network_blue_vel_y')
+policy_network_blue_vel_a = tf.keras.models.load_model('keras/policy_network_blue_vel_a')
+policy_network_red_vel_x = tf.keras.models.load_model('keras/policy_network_red_vel_x')
+policy_network_red_vel_y = tf.keras.models.load_model('keras/policy_network_red_vel_y')
+policy_network_red_vel_a = tf.keras.models.load_model('keras/policy_network_red_vel_a')
 
 # Set up the optimizer and loss function
-optimizer = tf.keras.optimizers.legacy.Adam(learning_rate=0.001)
+optimizer = tf.keras.optimizers.legacy.Adam(learning_rate=0.01)
 loss_fn = tf.keras.losses.SparseCategoricalCrossentropy()
 
 # Set up lists to store episode rewards and lengths
 episode_rewards = []
 episode_lengths = []
 
-num_episodes = 50
+num_episodes = 1000
 discount_factor = 0.99
 
 # Train the agent using the REINFORCE algorithm

@@ -1,5 +1,6 @@
 from gymnasium.spaces import Dict, Box, MultiDiscrete, Discrete
 import numpy as np
+import tensorflow as tf
 import pprint
 
 observations = Dict(
@@ -34,3 +35,6 @@ actions = Dict(
 pp = pprint.PrettyPrinter(indent=4)
 pp.pprint(observations.sample())'''
 print(f'keras/{str(["policy_network_blue_vel_x", "policy_network_blue_vel_y", "policy_network_blue_vel_a"][[9, 8, 7].index(8)])}')
+print("Num GPUs Available: ", len(tf.config.list_physical_devices('GPU')))
+print(tf.test.is_built_with_cuda())
+

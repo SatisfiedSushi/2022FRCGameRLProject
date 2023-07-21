@@ -2,8 +2,6 @@
 import time
 
 import numpy as np
-from pygame.threads import Thread
-
 from FRCGameEnv2 import env
 import tensorflow as tf
 
@@ -24,11 +22,7 @@ policy_network_red_vel_x = tf.keras.models.load_model('keras/policy_network_red_
 policy_network_red_vel_y = tf.keras.models.load_model('keras/policy_network_red_vel_y')
 policy_network_red_vel_a = tf.keras.models.load_model('keras/policy_network_red_vel_a')
 
-render_thread = Thread(target=environment.render)
-render_thread.start()
-
 with tf.device('/GPU:0'):
-
     while not done:
         steps += 1
         action_holder_converted = {}
@@ -64,9 +58,14 @@ with tf.device('/GPU:0'):
         next_state, reward, dones, truncation, info = environment.step(action_holder_converted)  # take a step in the environment
         if truncation['__all__']:
             done = True
+        environment.reset_pygame()
+        environment.render()
+
         # convert image to pygame surface object
 
         count += 1
 
 
         state = next_state
+
+

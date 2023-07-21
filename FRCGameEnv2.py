@@ -1,8 +1,10 @@
 import functools
 import math
 import random
+import sys
 import time
 from copy import copy
+#sys.setrecursionlimit(1000000)
 
 import gym
 import gymnasium
@@ -19,6 +21,7 @@ from ray.rllib import MultiAgentEnv
 
 from SwerveDrive import SwerveDrive
 
+print(np.__version__)
 
 class ScoreHolder:
     def __init__(self):
@@ -264,12 +267,12 @@ class env(MultiAgentEnv):
     def __init__(self, render_mode="human"):
         # --- pygame setup ---
         self.PPM = 100.0  # pixels per meter
-        self.TARGET_FPS = 50
+        self.TARGET_FPS = 60
         self.TIME_STEP = 1.0 / self.TARGET_FPS
         self.SCREEN_WIDTH, self.SCREEN_HEIGHT = self.meters_to_pixels(16.46), self.meters_to_pixels(8.23)
         self.screen = None
         self.clock = None
-        self.teleop_time = 300  # 135 default
+        self.teleop_time = 30  # 135 default
 
         # RL variables
         self.render_mode = render_mode
@@ -357,7 +360,6 @@ class env(MultiAgentEnv):
         b2CircleShape.draw = my_draw_circle
 
     def reset(self, *, seed=None, options=None):
-        self.resetted = True
 
         # --- RL variables ---
         self.agents = copy(self.possible_agents)
@@ -485,6 +487,7 @@ class env(MultiAgentEnv):
         }
 
         self.reset_pygame()
+        self.resetted = True
 
         infos = {agent: {} for agent in self.agents}
 
@@ -586,7 +589,6 @@ class env(MultiAgentEnv):
         pygame.quit()
 
     def render(self):
-        print("rendering")
         if self.render_mode is None:
             gymnasium.logger.warn(
                 "You are calling render method without specifying any render mode."
@@ -623,4 +625,3 @@ class env(MultiAgentEnv):
 
         pygame.display.flip()
         self.clock.tick(self.TARGET_FPS)
-        self.render()
