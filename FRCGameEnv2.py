@@ -27,8 +27,15 @@ class ScoreHolder:
     def __init__(self):
         self.red_points = 0
         self.blue_points = 0
+        self.swerves = []
 
-    def increase_points(self, team):
+    def set_swerves(self, swerves):
+        self.swerves = swerves
+
+    def increase_points(self, team, robot):
+        for swerve in self.swerves:
+            if swerve.get_team() == team:
+                swerve.set_score(swerve.get_score() + 1)
         match team:
             case 'Blue':
                 self.blue_points += 1
@@ -100,7 +107,8 @@ class MyContactListener(b2ContactListener):
                     print((math.degrees(main.angle) % 360) - angle_degrees)'''
                     # print("destroy")
                     if 'Team' in ball.userData:
-                        self.scoreHolder.increase_points(ball.userData['Team'])
+                        self.scoreHolder.increase_points(ball.userData['Team'], main)
+
                     self.destroy_body(ball, ball.userData['Team'])
 
     def EndContact(self, contact):
@@ -113,7 +121,7 @@ class MyContactListener(b2ContactListener):
         pass
 
 
-class env(MultiAgentEnv):
+class env(gym.Env):
     metadata = {
         'render.modes': ['human'],
         'name': 'FRCGameEnv-v0'
@@ -465,6 +473,8 @@ class env(MultiAgentEnv):
                         angular_velocity_factor=self.angular_velocity_factor) for robot in
             self.robots]  # TODO: find out how the fuck this works
 
+        self.scoreHolder.set_swerves(swerves=self.swerve_instances)
+
         '''observations = {
             agent: {
                 'angle': np.array([0]),
@@ -482,7 +492,7 @@ class env(MultiAgentEnv):
             for agent in self.agents
         }'''
         observations = {
-            agent: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            agent: [1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
             for agent in self.agents
         }
 
@@ -523,13 +533,19 @@ class env(MultiAgentEnv):
 
         self.world.Step(self.TIME_STEP, 10, 10)
 
-        rewards = {
+        '''rewards = {
             agent:
                 self.scoreHolder.get_score(
                     self.swerve_instances[self.agents.index(agent)].get_box2d_instance().userData['Team'])
             for agent in self.agents
-        }
+        }'''
 
+        # rewards from swerve isntances
+        rewards = {
+            agent:
+                (self.swerve_instances[self.agents.index(agent)].get_score() if not self.swerve_instances[self.agents.index(agent)].get_score_checked() else 0) + (np.abs(self.return_closest_ball(self.swerve_instances[self.agents.index(agent)].get_box2d_instance())[1]) / 18000)
+            for agent in self.agents
+        }
         terminated = {"__all__": False}
         truncated = {"__all__": False}
         if self.game_time < 0:

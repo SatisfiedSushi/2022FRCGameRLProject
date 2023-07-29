@@ -1,12 +1,15 @@
 import functools
 import math
 import random
+import sys
 import time
 from copy import copy
+#sys.setrecursionlimit(1000000)
 
 import gym
 import gymnasium
-from gymnasium.spaces import Dict, Box, MultiDiscrete
+from gymnasium.spaces import Dict, MultiDiscrete
+from gym.spaces.box import Box
 # from pygame.locals import (QUIT, KEYDOWN, K_ESCAPE)
 import numpy as np
 import pygame
@@ -19,13 +22,21 @@ from ray.rllib import MultiAgentEnv
 
 from SwerveDrive import SwerveDrive
 
+print(np.__version__)
 
 class ScoreHolder:
     def __init__(self):
         self.red_points = 0
         self.blue_points = 0
+        self.swerves = []
 
-    def increase_points(self, team):
+    def set_swerves(self, swerves):
+        self.swerves = swerves
+
+    def increase_points(self, team, robot):
+        for swerve in self.swerves:
+            if swerve.get_box2d_instance() == robot:
+                swerve.set_score(swerve.get_score() + 1000000)
         match team:
             case 'Blue':
                 self.blue_points += 1
@@ -52,7 +63,7 @@ class ScoreHolder:
 
 class MyContactListener(b2ContactListener):
     def destroy_body(self, body_to_destroy, team):
-        body_to_destroy.userData({"ball": True, 'Team': team, "isFlaggedForDelete": True})
+        body_to_destroy.userData = {"ball": True, 'Team': team, "isFlaggedForDelete": True}
 
     def GetBodies(self, contact):
         fixture_a = contact.fixtureA
@@ -97,7 +108,8 @@ class MyContactListener(b2ContactListener):
                     print((math.degrees(main.angle) % 360) - angle_degrees)'''
                     # print("destroy")
                     if 'Team' in ball.userData:
-                        self.scoreHolder.increase_points(ball.userData['Team'])
+                        self.scoreHolder.increase_points(ball.userData['Team'], main)
+
                     self.destroy_body(ball, ball.userData['Team'])
 
     def EndContact(self, contact):
@@ -110,7 +122,7 @@ class MyContactListener(b2ContactListener):
         pass
 
 
-class env(gymnasium.Env):
+class env(gym.Env):
     metadata = {
         'render.modes': ['human'],
         'name': 'FRCGameEnv-v0'
@@ -129,17 +141,20 @@ class env(gymnasium.Env):
                         if data["isFlaggedForDelete"]:
                             choice = random.randint(1, 4)
                             if 'ball' in body.userData and 'Team' in body.userData:
-                                self.create_new_ball((self.hub_points[choice - 1].x, self.hub_points[choice - 1].y),
+                                # self.create_new_ball((self.hub_points[choice - 1].x, self.hub_points[choice - 1].y),
+                                                    # ((choice * (np.pi / 2)) + np.pi) + 1.151917 / 4, data["Team"])
+                                self.create_new_ball((self.hub_points[choice - 1][0], self.hub_points[choice - 1][1]),
                                                      ((choice * (np.pi / 2)) + np.pi) + 1.151917 / 4, data["Team"])
                                 self.balls.remove(body)
                                 self.world.DestroyBody(body)
-                                body.userData(None)
+                                body.userData = None
                                 body = None
 
     def return_closest_ball(self, robot):
         LL_FOV = 31.65
         closest_ball = None
-        angle_offset = 0
+        angle_offset = -1
+        distance = -1
 
         for ball in self.balls:
             if ball.userData['Team'] == robot.userData['Team']:
@@ -154,12 +169,14 @@ class env(gymnasium.Env):
                     if closest_ball is None:
                         closest_ball = ball
                         angle_offset = (math.degrees(robot.angle) % 360) - angle_degrees
+                        distance = new_ball_position[0] ** 2 + new_ball_position[1] ** 2
                     elif (new_ball_position[0] ** 2 + new_ball_position[1] ** 2) < (
                             closest_ball.position.x ** 2 + closest_ball.position.y ** 2):
                         closest_ball = ball
+                        distance = new_ball_position[0] ** 2 + new_ball_position[1] ** 2
                         angle_offset = (math.degrees(robot.angle) % 360) - angle_degrees
 
-        return closest_ball, angle_offset
+        return closest_ball, angle_offset, distance
 
     def return_robots_in_sight(self, robot_main):
         LL_FOV = 31.65  # 31.65 degrees off the center of the LL
@@ -263,7 +280,6 @@ class env(gymnasium.Env):
 
     def __init__(self, render_mode="human"):
         # --- pygame setup ---
-        super().__init__()
         self.PPM = 100.0  # pixels per meter
         self.TARGET_FPS = 60
         self.TIME_STEP = 1.0 / self.TARGET_FPS
@@ -274,18 +290,12 @@ class env(gymnasium.Env):
 
         # RL variables
         self.render_mode = render_mode
-        self.possible_agents = ["blue_1", "blue_2", "blue_3", "red_1", "red_2", "red_3"]
-        self.agent_ids = ["blue_1", "blue_2", "blue_3", "red_1", "red_2", "red_3"]
+        self.possible_agents = ["blue_1"]
+        self.agent_ids = ["blue_1"]
         self.agents = copy(self.possible_agents)
         self.resetted = False
-        self.observation_space = Dict({
-            agent: Box(low=np.array([-1, -1, -1, -1, -180, -180, -180, -180, -180, -180, 0, 0, 0, 0, 0]), high=np.array([1, 1, 1, 360, 180, 180, 180, 180, 180, 180, 3, 3, 3, 3, 3]), shape=(15,))
-            for agent in self.agents
-        })
-        self.action_space = Dict({
-            agent: Box(low=np.array([-1, -1, -1]), high=np.array([1, 1, 1]), shape=(3,))
-            for agent in self.agents
-        })
+        self.observation_space = Box(low=np.array([-1, -1, -1, 0, -180, -180, -180, -180, -180, -180, 0, 0, 0, 0, 0]), high=np.array([1, 1, 1, 360, 180, 180, 180, 180, 180, 180, 3, 3, 3, 3, 3]), shape=(15,))
+        self.action_space = Box(low=np.array([-1, -1, -1]), high=np.array([1, 1, 1]), shape=(3,))
 
         self.red_Xs = None
         self.red_Ys = None
@@ -358,7 +368,6 @@ class env(gymnasium.Env):
         b2CircleShape.draw = my_draw_circle
 
     def reset(self, *, seed=None, options=None):
-        self.resetted = True
 
         # --- RL variables ---
         self.agents = copy(self.possible_agents)
@@ -412,7 +421,7 @@ class env(gymnasium.Env):
             shapes=b2PolygonShape(box=(0.99, 2.47)),
         )
 
-        self.hub = self.world.CreateStaticBody(
+        '''self.hub = self.world.CreateStaticBody(
             position=(16.46 / 2, 8.23 / 2),
             angle=1.151917,
             shapes=b2PolygonShape(box=(0.86, 0.86)),
@@ -431,29 +440,37 @@ class env(gymnasium.Env):
             else:
                 new_vertex.y += offset
 
-            self.hub_points.append(new_vertex)
+            self.hub_points.append(new_vertex)'''
+
+        for i in range(4):
+            self.hub_points.append((i + 2, 4))
 
         ball_circle_diameter = 7.77
         ball_circle_center = (16.46 / 2, 8.23 / 2)
 
         ball_x_coords = [0.658, -0.858, -2.243, -3.287, -3.790, -3.174, -0.658, 0.858, 2.243, 3.287, 3.790, 3.174,
                          -7.165,
-                         7.165]
+                         7.165, -2]
         ball_y_coords = [3.830, 3.790, 3.174, 2.074, -0.858, -2.243, -3.830, -3.790, -3.174, -2.074, 0.858, 2.243,
                          -2.990,
-                         2.990]
+                         2.990, 0]
 
         ball_teams = ["Red", "Blue", "Red", "Blue", "Red", "Blue", "Blue", "Red", "Blue", "Red", "Blue", "Red", "Blue",
-                      "Red"]
+                      "Red", "Blue"]
 
         for x_coord, y_coord, team in zip(ball_x_coords, ball_y_coords, ball_teams):
             position = (x_coord + ball_circle_center[0], y_coord + ball_circle_center[1])
             self.create_new_ball(position=position, force_direction=0, team=team, force=0)
 
-        robot_x_coords = [-1.3815, -0.941, 0, 1.381, 0.941, 0]
+        '''robot_x_coords = [-1.3815, -0.941, 0, 1.381, 0.941, 0]
         robot_y_coords = [0.5305, -0.9915, -1.3665, -0.53, 0.9915, 1.3665]
 
-        robot_teams = ["Blue", "Blue", "Blue", "Red", "Red", "Red"]
+        robot_teams = ["Blue", "Blue", "Blue", "Red", "Red", "Red"]'''
+
+        robot_x_coords = [-1.3815]
+        robot_y_coords = [0.5305]
+
+        robot_teams = ["Blue"]
 
         for x_coord, y_coord, team in zip(robot_x_coords, robot_y_coords, robot_teams):
             position = (x_coord + ball_circle_center[0], y_coord + ball_circle_center[1])
@@ -463,6 +480,8 @@ class env(gymnasium.Env):
             SwerveDrive(robot, robot.userData['Team'], 0, (1, 1), 1, velocity_factor=self.velocity_factor,
                         angular_velocity_factor=self.angular_velocity_factor) for robot in
             self.robots]  # TODO: find out how the fuck this works
+
+        self.scoreHolder.set_swerves(swerves=self.swerve_instances)
 
         '''observations = {
             agent: {
@@ -480,16 +499,13 @@ class env(gymnasium.Env):
 
             for agent in self.agents
         }'''
-        observations = {
-            agent: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-            for agent in self.agents
-        }
-
+        observations = np.array([1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
         self.reset_pygame()
+        self.resetted = True
 
-        infos = {agent: {} for agent in self.agents}
+        infos = {}
 
-        return observations, infos
+        return observations
 
     def reset_pygame(self):
         # --- pygame setup ---
@@ -500,17 +516,23 @@ class env(gymnasium.Env):
         self.screen = pygame.display.set_mode((self.SCREEN_WIDTH, self.SCREEN_HEIGHT), 0, 32)
 
     def step(self, actions):  # TODO: change action dictionary
-        if not actions:
+        if actions is None or actions == []:
             self.agents = []
             return {}, {}, {}, {}, {}
 
         self.game_time = self.teleop_time - (time.time() - self.current_time)
         self.sweep_dead_bodies()
 
+
         for agent in self.agents:
             swerve = self.swerve_instances[self.agents.index(agent)]
-            swerve.set_velocity((actions[agent][0], actions[agent][1]))
-            swerve.set_angular_velocity(actions[agent][2])
+
+            if self.agents[0] == agent:
+                swerve.set_velocity((actions[0], actions[1]))
+                swerve.set_angular_velocity(actions[2])
+            else:
+                swerve.set_velocity((0, 0))
+                swerve.set_angular_velocity(0)
             swerve.update()
 
             match self.is_close_to_terminal(swerve.get_box2d_instance(), self.red_spawned, self.blue_spawned):
@@ -520,21 +542,59 @@ class env(gymnasium.Env):
                     self.blue_spawned = True
 
         self.world.Step(self.TIME_STEP, 10, 10)
-        self.clock.tick(self.TARGET_FPS)
 
-        rewards = {
-            agent: {
+        '''rewards = {
+            agent:
                 self.scoreHolder.get_score(
                     self.swerve_instances[self.agents.index(agent)].get_box2d_instance().userData['Team'])
-            }
+            for agent in self.agents
+        }'''
+
+        def convert_LL_angle_rewards(angle):
+            LL_FOV = 31.65
+            multiplied_angle = angle * 100
+
+            if angle == -1:
+                return 0
+            elif angle < 0.01:
+                return LL_FOV
+            else:
+                return ((LL_FOV * 100) - multiplied_angle) / 100
+
+        def convert_LL_distance_rewards(distance):
+            max_y_distance = 8.23
+            max_X_distance = 16.46
+            max_distance = math.sqrt(max_y_distance ** 2 + max_X_distance ** 2)
+            multiplied_distance = distance * 100
+            if distance == -1:
+                return 0
+            if distance < 0.01:
+                return max_distance
+            else:
+                return ((max_distance * 100) - multiplied_distance) / 100
+
+        score_checked = self.swerve_instances[0].get_score_checked()
+
+        # rewards from swerve isntances
+        rewards = {
+            agent:
+                # (self.swerve_instances[self.agents.index(agent)].get_score() if not self.swerve_instances[self.agents.index(agent)].get_score_checked() else 0) + (convert_LL_angle_rewards(np.abs(self.return_closest_ball(self.swerve_instances[0].get_box2d_instance())[1])) / 10) + (convert_LL_distance_rewards(np.abs(self.return_closest_ball(self.swerve_instances[0].get_box2d_instance())[2])) / 10)
+                self.swerve_instances[self.agents.index(agent)].get_score() + (convert_LL_angle_rewards(
+                    np.abs(self.return_closest_ball(self.swerve_instances[0].get_box2d_instance())[1])) / 10) + (
+                            convert_LL_distance_rewards(np.abs(
+                                self.return_closest_ball(self.swerve_instances[0].get_box2d_instance())[2])) / 10)
             for agent in self.agents
         }
-
+        # print(rewards['blue_1'])
+        # print(f'angle {(convert_LL_angle_rewards(np.abs(self.return_closest_ball(self.swerve_instances[0].get_box2d_instance())[1])) / 10)} | distance {(convert_LL_distance_rewards(np.abs(self.return_closest_ball(self.swerve_instances[0].get_box2d_instance())[2])) / 10)}')
+        if rewards['blue_1'] > 1000 and not score_checked:
+            print('picked up ball')
+            print(rewards['blue_1'])
         terminated = {"__all__": False}
         truncated = {"__all__": False}
-        if self.game_time > self.teleop_time:
-            truncated = truncated["__all__"] = True
-            terminated = terminated["__all__"] = True
+        if self.game_time < 0:
+            truncated["__all__"] = True
+            terminated["__all__"] = True
 
         '''obs = {
             agent: {
@@ -557,37 +617,35 @@ class env(gymnasium.Env):
 
             for agent in self.agents
         }'''
-        obs = {
-            agent: [self.swerve_instances[self.agents.index(agent)].get_velocity()[0], self.swerve_instances[self.agents.index(agent)].get_velocity()[1],
-                    self.swerve_instances[self.agents.index(agent)].get_angular_velocity(),
-                    self.swerve_instances[self.agents.index(agent)].get_angle(),
-                    self.return_robots_in_sight(self.swerve_instances[self.agents.index(agent)].get_box2d_instance())[1][0],
-                    self.return_robots_in_sight(self.swerve_instances[self.agents.index(agent)].get_box2d_instance())[1][1],
-                    self.return_robots_in_sight(self.swerve_instances[self.agents.index(agent)].get_box2d_instance())[1][2],
-                    self.return_robots_in_sight(self.swerve_instances[self.agents.index(agent)].get_box2d_instance())[1][3],
-                    self.return_robots_in_sight(self.swerve_instances[self.agents.index(agent)].get_box2d_instance())[1][4],
-                    self.return_robots_in_sight(self.swerve_instances[self.agents.index(agent)].get_box2d_instance())[0][0],
-                    self.return_robots_in_sight(self.swerve_instances[self.agents.index(agent)].get_box2d_instance())[0][1],
-                    self.return_robots_in_sight(self.swerve_instances[self.agents.index(agent)].get_box2d_instance())[0][2],
-                    self.return_robots_in_sight(self.swerve_instances[self.agents.index(agent)].get_box2d_instance())[0][3],
-                    self.return_robots_in_sight(self.swerve_instances[self.agents.index(agent)].get_box2d_instance())[0][4],]
-            for agent in self.agents
-        }
+        obs = [self.swerve_instances[0].get_velocity()[0], self.swerve_instances[0].get_velocity()[1],
+                    self.swerve_instances[0].get_angular_velocity(),
+                    self.swerve_instances[0].get_angle(),
+                    self.return_closest_ball(self.swerve_instances[0].get_box2d_instance())[1],
+                    self.return_robots_in_sight(self.swerve_instances[0].get_box2d_instance())[1][0],
+                    self.return_robots_in_sight(self.swerve_instances[0].get_box2d_instance())[1][1],
+                    self.return_robots_in_sight(self.swerve_instances[0].get_box2d_instance())[1][2],
+                    self.return_robots_in_sight(self.swerve_instances[0].get_box2d_instance())[1][3],
+                    self.return_robots_in_sight(self.swerve_instances[0].get_box2d_instance())[1][4],
+                    self.return_robots_in_sight(self.swerve_instances[0].get_box2d_instance())[0][0],
+                    self.return_robots_in_sight(self.swerve_instances[0].get_box2d_instance())[0][1],
+                    self.return_robots_in_sight(self.swerve_instances[0].get_box2d_instance())[0][2],
+                    self.return_robots_in_sight(self.swerve_instances[0].get_box2d_instance())[0][3],
+                    self.return_robots_in_sight(self.swerve_instances[0].get_box2d_instance())[0][4]]
 
         info = {agent: {} for agent in self.agents}
 
         if truncated["__all__"]:
             self.agents = []
+            print("quit")
             pygame.quit()
-
-        if self.render_mode == 'human':
-            self.render()
-        return obs, rewards, terminated, truncated, info
+        return obs, rewards['blue_1'], truncated['__all__'], info['blue_1']
 
     def close(self):
+        print("quit")
         pygame.quit()
 
-    def render(self):
+    def render(self, render_mode='human', **kwargs):
+        # self.reset_pygame()
         if self.render_mode is None:
             gymnasium.logger.warn(
                 "You are calling render method without specifying any render mode."
@@ -596,9 +654,9 @@ class env(gymnasium.Env):
 
         self.screen.fill((0, 0, 0, 0))
 
-        for fixture in self.hub.fixtures:
+        '''for fixture in self.hub.fixtures:
             fixture.shape.draw(self.hub, fixture)
-
+'''
         for fixture in self.terminal_red.fixtures:
             fixture.shape.draw(self.terminal_red, fixture)
 
@@ -623,3 +681,4 @@ class env(gymnasium.Env):
                          (self.screen.get_width() / 2 - 20, 10))
 
         pygame.display.flip()
+        self.clock.tick(self.TARGET_FPS)

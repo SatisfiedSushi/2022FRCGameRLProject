@@ -26,7 +26,7 @@ loss_fn = tf.keras.losses.SparseCategoricalCrossentropy()
 episode_rewards = []
 episode_lengths = []
 
-num_episodes = 1
+num_episodes = 10
 discount_factor = 0.99
 
 # Train the agent using the REINFORCE algorithm
@@ -44,7 +44,7 @@ for episode in range(num_episodes):
     # Run the episode
     while True:
         # Get the action probabilities from the policy network
-        action_probs = policy_network.predict(np.array([state]))[0]
+        action_probs = policy_network.predict(np.array([state]))
 
         # Choose an action based on the action probabilities
         action = np.random.choice(num_actions, p=action_probs)
@@ -90,7 +90,8 @@ for episode in range(num_episodes):
         action_probs = policy_network(states)
         # Calculate the loss
         loss = tf.cast(tf.math.log(tf.gather(action_probs, actions, axis=1, batch_dims=1)), tf.float64)
-
+        print(loss.shape)
+        print(discounted_rewards.shape)
         loss = loss * discounted_rewards
         loss = -tf.reduce_sum(loss)
 

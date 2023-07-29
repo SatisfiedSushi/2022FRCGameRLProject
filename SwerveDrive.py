@@ -15,7 +15,15 @@ class SwerveDrive(object):
         self.angular_velocity = angular_velocity
         self.velocity_with_factor = velocity * velocity_factor
         self.angular_velocity_with_factor = angular_velocity * angular_velocity_factor
+        self.score = 0
+        self.score_checked = False
 
+    def get_score_checked(self) -> bool:
+        return self.score_checked
+
+    def get_score(self) -> int:
+        self.score_checked = True
+        return self.score
 
     def get_team(self) -> str:
         return self.team
@@ -39,6 +47,10 @@ class SwerveDrive(object):
 
     def get_angular_velocity_with_factor(self) -> Union[int, float]:
         return self.angular_velocity_with_factor
+
+    def set_score(self, score: int) -> None:
+        self.score_checked = False
+        self.score = score
 
     def set_team(self, team):
         self.team = team
